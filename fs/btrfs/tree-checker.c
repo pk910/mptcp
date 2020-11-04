@@ -243,7 +243,7 @@ static int check_extent_data_item(struct extent_buffer *leaf,
 }
 
 static int check_csum_item(struct extent_buffer *leaf, struct btrfs_key *key,
-			   int slot)
+			   int slot, struct btrfs_key *prev_key)
 {
 	struct btrfs_fs_info *fs_info = leaf->fs_info;
 	u32 sectorsize = fs_info->sectorsize;
@@ -266,6 +266,20 @@ static int check_csum_item(struct extent_buffer *leaf, struct btrfs_key *key,
 	"unaligned item size for csum item, have %u should be aligned to %u",
 			btrfs_item_size_nr(leaf, slot), csumsize);
 		return -EUCLEAN;
+	}
+	if (slot > 0 && prev_key->type == BTRFS_EXTENT_CSUM_KEY) {
+		u64 prev_csum_end;
+		u32 prev_item_size;
+
+		prev_item_size = btrfs_item_size_nr(leaf, slot - 1);
+		prev_csum_end = (prev_item_size / csumsize) * sectorsize;
+		prev_csum_end += prev_key->offset;
+		if (prev_csum_end > key->offset) {
+			generic_err(leaf, slot - 1,
+"csum end range (%llu) goes beyond the start range (%llu) of the next csum item",
+				    prev_csum_end, key->offset);
+			return -EUCLEAN;
+		}
 	}
 	return 0;
 }
@@ -660,6 +674,44 @@ int btrfs_check_chunk_valid(struct extent_buffer *leaf,
 	return 0;
 }
 
+/*
+ * Enhanced version of chunk item checker.
+ *
+ * The common btrfs_check_chunk_valid() doesn't check item size since it needs
+ * to work on super block sys_chunk_array which doesn't have full item ptr.
+ */
+static int check_leaf_chunk_item(struct extent_buffer *leaf,
+				 struct btrfs_chunk *chunk,
+				 struct btrfs_key *key, int slot)
+{
+	int num_stripes;
+
+	if (btrfs_item_size_nr(leaf, slot) < sizeof(struct btrfs_chunk)) {
+		chunk_err(leaf, chunk, key->offset,
+			"invalid chunk item size: have %u expect [%zu, %u)",
+			btrfs_item_size_nr(leaf, slot),
+			sizeof(struct btrfs_chunk),
+			BTRFS_LEAF_DATA_SIZE(leaf->fs_info));
+		return -EUCLEAN;
+	}
+
+	num_stripes = btrfs_chunk_num_stripes(leaf, chunk);
+	/* Let btrfs_check_chunk_valid() handle this error type */
+	if (num_stripes == 0)
+		goto out;
+
+	if (btrfs_chunk_item_size(num_stripes) !=
+	    btrfs_item_size_nr(leaf, slot)) {
+		chunk_err(leaf, chunk, key->offset,
+			"invalid chunk item size: have %u expect %lu",
+			btrfs_item_size_nr(leaf, slot),
+			btrfs_chunk_item_size(num_stripes));
+		return -EUCLEAN;
+	}
+out:
+	return btrfs_check_chunk_valid(leaf, chunk, key->offset);
+}
+
 __printf(3, 4)
 __cold
 static void dev_item_err(const struct extent_buffer *eb, int slot,
@@ -758,7 +810,7 @@ static int check_inode_item(struct extent_buffer *leaf,
 	/* Here we use super block generation + 1 to handle log tree */
 	if (btrfs_inode_generation(leaf, iitem) > super_gen + 1) {
 		inode_item_err(fs_info, leaf, slot,
-			"invalid inode generation: has %llu expect (0, %llu]",
+			"invalid inode transid: has %llu expect [0, %llu]",
 			       btrfs_inode_generation(leaf, iitem),
 			       super_gen + 1);
 		return -EUCLEAN;
@@ -1239,7 +1291,7 @@ static int check_leaf_item(struct extent_buffer *leaf,
 		ret = check_extent_data_item(leaf, key, slot, prev_key);
 		break;
 	case BTRFS_EXTENT_CSUM_KEY:
-		ret = check_csum_item(leaf, key, slot);
+		ret = check_csum_item(leaf, key, slot, prev_key);
 		break;
 	case BTRFS_DIR_ITEM_KEY:
 	case BTRFS_DIR_INDEX_KEY:
@@ -1251,7 +1303,7 @@ static int check_leaf_item(struct extent_buffer *leaf,
 		break;
 	case BTRFS_CHUNK_ITEM_KEY:
 		chunk = btrfs_item_ptr(leaf, slot, struct btrfs_chunk);
-		ret = btrfs_check_chunk_valid(leaf, chunk, key->offset);
+		ret = check_leaf_chunk_item(leaf, chunk, key, slot);
 		break;
 	case BTRFS_DEV_ITEM_KEY:
 		ret = check_dev_item(leaf, key, slot);

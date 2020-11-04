@@ -224,8 +224,8 @@ static void qla_nvme_abort_work(struct work_struct *work)
 
 	if (ha->flags.host_shutting_down) {
 		ql_log(ql_log_info, sp->fcport->vha, 0xffff,
-		    "%s Calling done on sp: %p, type: 0x%x, sp->ref_count: 0x%x\n",
-		    __func__, sp, sp->type, atomic_read(&sp->ref_count));
+		    "%s Calling done on sp: %p, type: 0x%x\n",
+		    __func__, sp, sp->type);
 		sp->done(sp, 0);
 		goto out;
 	}
@@ -534,6 +534,11 @@ static int qla_nvme_post_cmd(struct nvme_fc_local_port *lport,
 	struct qla_qpair *qpair = hw_queue_handle;
 	struct nvme_private *priv = fd->private;
 	struct qla_nvme_rport *qla_rport = rport->private;
+
+	if (!priv) {
+		/* nvme association has been torn down */
+		return rval;
+	}
 
 	fcport = qla_rport->fcport;
 
