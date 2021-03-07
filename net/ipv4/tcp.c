@@ -507,6 +507,8 @@ static inline bool tcp_stream_is_readable(const struct tcp_sock *tp,
 			return true;
 		if (tcp_rmem_pressure(sk))
 			return true;
+		if (tcp_receive_window(tp) <= inet_csk(sk)->icsk_ack.rcv_mss)
+			return true;
 	}
 	if (sk->sk_prot->stream_memory_read)
 		return sk->sk_prot->stream_memory_read(sk);
@@ -2745,6 +2747,11 @@ int tcp_disconnect(struct sock *sk, int flags)
 	icsk->icsk_backoff = 0;
 	tp->snd_cwnd = 2;
 	icsk->icsk_probes_out = 0;
+	icsk->icsk_probes_tstamp = 0;
+	icsk->icsk_rto = TCP_TIMEOUT_INIT;
+	tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
+	tp->snd_cwnd = TCP_INIT_CWND;
+	tp->snd_cwnd_cnt = 0;
 	tp->window_clamp = 0;
 	tp->delivered = 0;
 	tp->delivered_ce = 0;
