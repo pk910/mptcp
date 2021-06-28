@@ -884,7 +884,7 @@ static inline bool mptcp_sequence(const struct tcp_sock *meta_tp,
 	}
 
 	return	!before64(end_data_seq, rcv_wup64) &&
-		!after64(data_seq, mptcp_get_rcv_nxt_64(meta_tp) + tcp_receive_window(meta_tp));
+		!after64(data_seq, mptcp_get_rcv_nxt_64(meta_tp) + tcp_receive_window_now(meta_tp));
 }
 
 /* @return: 0  everything is fine. Just continue processing
@@ -1033,7 +1033,7 @@ static int mptcp_queue_skb(struct sock *sk)
 
 		/* Quick ACK if more 3/4 of the receive window is filled */
 		if (after64(tp->mptcp->map_data_seq,
-			    rcv_nxt64 + 3 * (tcp_receive_window(meta_tp) >> 2)))
+			    rcv_nxt64 + 3 * (tcp_receive_window_now(meta_tp) >> 2)))
 			tcp_enter_quickack_mode(sk, TCP_MAX_QUICKACKS);
 
 	} else {
@@ -1425,6 +1425,19 @@ static void mptcp_snd_una_update(struct tcp_sock *meta_tp, u32 data_ack)
 	meta_tp->snd_una = data_ack;
 }
 
+static void mptcp_stop_subflow_chronos(struct sock *meta_sk,
+				       const enum tcp_chrono type)
+{
+	const struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
+	struct mptcp_tcp_sock *mptcp;
+
+	mptcp_for_each_sub(mpcb, mptcp) {
+		struct sock *sk_it = mptcp_to_sock(mptcp);
+
+		tcp_chrono_stop(sk_it, type);
+	}
+}
+
 /* Handle the DATA_ACK */
 static bool mptcp_process_data_ack(struct sock *sk, const struct sk_buff *skb)
 {
@@ -1550,6 +1563,13 @@ static bool mptcp_process_data_ack(struct sock *sk, const struct sk_buff *skb)
 		if (meta_sk->sk_socket &&
 		    test_bit(SOCK_NOSPACE, &meta_sk->sk_socket->flags))
 			meta_sk->sk_write_space(meta_sk);
+
+		if (meta_sk->sk_socket &&
+		    !test_bit(SOCK_NOSPACE, &meta_sk->sk_socket->flags)) {
+			tcp_chrono_stop(meta_sk, TCP_CHRONO_SNDBUF_LIMITED);
+			mptcp_stop_subflow_chronos(meta_sk,
+						   TCP_CHRONO_SNDBUF_LIMITED);
+		}
 	}
 
 	if (meta_sk->sk_state != TCP_ESTABLISHED) {
